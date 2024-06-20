@@ -1,4 +1,5 @@
 import os
+import tkinter as tk
 import spwd
 import subprocess
 
@@ -74,8 +75,11 @@ def check_system_logs():
     os.system("grep -i 'failed password' /var/log/auth.log")
     os.system("grep -i 'segfault' /var/log/syslog")
 
-
-
+def check_CVE_2016_5195():
+    result = subprocess.run(['uname', '-r'], stdout=subprocess.PIPE)
+    output = result.stdout.decode()
+    if output[0] < "7":
+        print("Sistem linux trebuie actualizat. Esti vulnerabil la CVE_2016_5195. Pentru mai multe detalii intrati pe urmatorul link: https://nvd.nist.gov/vuln/detail/CVE-2016-5195")
 
 print(os.getcwd())
 #get_securityUpdates()
@@ -86,3 +90,24 @@ check_ssh_configuration()
 check_open_ports()
 check_setuid_files()
 check_system_logs()
+check_CVE_2016_5195()
+
+
+root = tk.Tk()
+root.title("Linux Security Vulnerabilities")
+
+# Create a scrollbar
+scrollbar = tk.Scrollbar(root)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+# Create a listbox to display the vulnerabilities
+listbox = tk.Listbox(root, yscrollcommand=scrollbar.set, width=100, height=20)
+listbox.pack(side=tk.LEFT, fill=tk.BOTH)
+scrollbar.config(command=listbox.yview)
+
+# Create a button to check for vulnerabilities
+check_button = tk.Button(root, text="Check Vulnerabilities", command=)
+check_button.pack()
+
+# Start the Tkinter main loop
+root.mainloop()
