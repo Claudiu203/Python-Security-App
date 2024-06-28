@@ -6,6 +6,7 @@ import spwd
 import time
 import pwd
 import grp
+import getpass
 import subprocess
 
 
@@ -20,6 +21,7 @@ root_users = []
 disabled_accounts = []
 ssh_problems = []
 sens_group_mem = []
+open_ports_global = []
 files_to_check = {
     "/etc/passwd": "644",
     "/etc/shadow": "600",
@@ -91,8 +93,7 @@ def check_users_and_groups():
         root_users = root_users_temp
         issues.append(f"Root users: {', '.join(root_users)}")
 
-    # Identify users in sensitive groups
-    sensitive_groups = ['sudo', 'wheel']
+    sensitive_groups = ['sudo']
     for group_name in sensitive_groups:
         try:
             group_info = grp.getgrnam(group_name)
@@ -102,7 +103,6 @@ def check_users_and_groups():
         except KeyError:
             continue
 
-    # Check for duplicate usernames and UIDs
     usernames = [user.pw_name for user in pwd.getpwall()]
     uids = [user.pw_uid for user in pwd.getpwall()]
     if len(usernames) != len(set(usernames)):
@@ -110,7 +110,6 @@ def check_users_and_groups():
     if len(uids) != len(set(uids)):
         issues.append("Duplicate UIDs found.")
 
-    # Check password expiry
     for user in pwd.getpwall():
         result = subprocess.run(['sudo', 'chage', '-l', user.pw_name], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         output = result.stdout.decode().strip().split('\n')
@@ -124,15 +123,39 @@ def check_users_and_groups():
     return issues 
 
 def check_suspicious_processes():
-    print("Checking for suspicious processes...")
-    result = subprocess.run(['ps', 'aux'], stdout=subprocess.PIPE)
-    output = result.stdout.decode()
-    suspicious_processes = ["nc", "netcat", "ncat", "perl", "python", "php", "ruby"]
-    for line in output.split('\n'):
-        for process in suspicious_processes:
-            if process in line:
-                suspiciousProcesses.append(line)
-                break
+    try:
+        suspicious_keywords = [
+            " nc ", "netcat", " ncat ", " perl ", "python", "php", "ruby", 
+            " nmap ", "telnet", " ssh ", "wget", " curl ", " bash ", " sh ",
+            " dd ", " netstat ", " ss ", " tcpdump "
+        ]
+
+
+        result = subprocess.run(['ps', 'aux'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Error executing ps command: {result.stderr.strip()}")
+
+        output = result.stdout.strip().split('\n')
+        headers = output[0]
+        processes = output[1:]
+        
+        issues = ["Suspicious processes detected:"]
+        suspicious_processes_found = False
+
+        for line in processes:
+            for keyword in suspicious_keywords:
+                if keyword in line:
+                    issues.append(line)
+                    suspicious_processes_found = True
+                    break  
+
+        if not suspicious_processes_found:
+            return ["No suspicious processes found."]
+        else:
+            return issues
+
+    except Exception as e:
+        return [f"An error occurred: {str(e)}"]
 
 def check_ssh_configuration():
     sshd_config = "/etc/ssh/sshd_config"
@@ -147,7 +170,6 @@ def check_ssh_configuration():
     else:
         print("sshd_config file does not exist.")
 
-
 def check_open_ports():
     print("Checking for open ports...")
     try:
@@ -158,7 +180,11 @@ def check_open_ports():
         lines = result.stdout.strip().split('\n')
         headers = lines[0]
         open_ports = lines[1:]
-
+        for port in open_ports:
+            temp = port.split(" ")
+            temp2 = temp[17].split(":")
+            if(temp2 != ['']):
+                open_ports_global.append(temp2[1])
         if not open_ports:
             return ["No open ports found."]
         
@@ -172,23 +198,21 @@ def check_open_ports():
         return [f"An error occurred: {str(e)}"]
 
 def check_setuid_files():
+    user = getpass.getuser()
+    path = "/home/" + user
     print("Checking for setuid files...")
-    result = subprocess.run(['find', '/', '-perm', '/4000'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    result = subprocess.run(['find', path, '-perm', '/4000'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     output = result.stdout.decode()
     for line in output.split("\n"):
         if "denied" not in line:
             setuidFiles.append(line)
-
-def check_system_logs():
-    print("Checking system logs for suspicious activity...")
-    os.system("grep -i 'failed password' /var/log/auth.log")
-    os.system("grep -i 'segfault' /var/log/syslog")
+    setuidFiles.pop()
 
 def check_CVE_2016_5195():
     result = subprocess.run(['uname', '-r'], stdout=subprocess.PIPE)
     output = result.stdout.decode()
-    if output[0] < "7":
-        print("Sistem linux trebuie actualizat. Esti vulnerabil la CVE_2016_5195. Pentru mai multe detalii intrati pe urmatorul link: https://nvd.nist.gov/vuln/detail/CVE-2016-5195")
+    if output[0] < "3":
+        print("The linux sistem must be updated. You are vulnerable to CVE_2016_5195. For more info click on the following link: https://nvd.nist.gov/vuln/detail/CVE-2016-5195")
 
 def check_firewall_status():
     print("Checking firewall status...")
@@ -230,13 +254,122 @@ def check_chkrootkit():
     except Exception as e:
         return [f"An error occurred: {str(e)}"]
 
+def change_permissions():
+    for file in file_permision:
+        temp = file.split(" ")
+        subprocess.run(['sudo', 'chmod', files_to_check[temp[1]], temp[1]], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
+def update_ssh_config():
+    sshd_config_path = '/etc/ssh/sshd_config'
+    backup_path = '/etc/ssh/sshd_config.bak'
+
+    subprocess.run(['sudo', 'cp', sshd_config_path, backup_path])
+    print(f"Backup of sshd_config created at {backup_path}")
+
+
+    with open(sshd_config_path, 'r') as file:
+        lines = file.readlines()
+
+    changes_made = False
+    new_lines = []
+    for line in lines:
+        if line.strip().startswith('PermitRootLogin'):
+            new_lines.append('PermitRootLogin no\n')
+            changes_made = True
+        elif line.strip().startswith('PasswordAuthentication'):
+            new_lines.append('PasswordAuthentication no\n')
+            changes_made = True
+        else:
+            new_lines.append(line)
+
+    if not any(line.strip().startswith('PermitRootLogin') for line in new_lines):
+        new_lines.append('PermitRootLogin no\n')
+        changes_made = True
+    if not any(line.strip().startswith('PasswordAuthentication') for line in new_lines):
+        new_lines.append('PasswordAuthentication no\n')
+        changes_made = True
+    
+    with open(sshd_config_path, 'w') as file:
+        file.writelines(new_lines)
+    
+    if changes_made:
+        print("sshd_config updated with new settings.")
+        
+        subprocess.run(['sudo', 'systemctl', 'restart', 'sshd'])
+        print("SSH service restarted.")
+    else:
+        print("No changes were made to sshd_config.")
+
+def close_ports(ports):
+
+    for port in ports:
+        try:
+            subprocess.run(['sudo', 'iptables', '-A', 'INPUT', '-p', 'tcp', '--dport', str(port), '-j', 'DROP'], check=True)
+            subprocess.run(['sudo', 'iptables', '-A', 'INPUT', '-p', 'udp', '--dport', str(port), '-j', 'DROP'], check=True)
+            print(f"Closed port {port}.")
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to close port {port}: {e}")
+
+def activate_firewall():
+    """Function to activate ufw firewall."""
+    try:
+        subprocess.run(['sudo', 'ufw', 'enable'], check=True)
+        print("ufw firewall activated.")
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to activate ufw firewall: {e}")
+
+def remove_setuid_bit():
+    for line in setuidFiles:
+        subprocess.run(['sudo', 'chmod', 'u-s', line], stdout=subprocess.PIPE)
+
+
+
+
+
+def solutions(ports, firewall):
+    print("\n\nI can solve for you the following problems:")
+    if security_updates != []:
+        print("Download and install security updates. (To select this option type update)")
+    if file_permision != []:
+        print("Change the file permisions.(To select this option type permissions)")
+    if ssh_problems != []:
+        print("Fix ssh problems.(To select this option type ssh)")
+    if ports != []:
+        print("Close open ports.(To select this option type ports)")
+    if firewall != []:
+        print("Turn on firewall.(To select this option type firewall)")
+    if setuidFiles != []:
+        print("Remove the setuid bit from files.(To select this option type setuid)")
+    print("if you want to enter more than one option separate them by ','.")
+    option = ""
+    option = input()
+    options = option.split(",")
+    for item in options:
+        if item == "update":
+            get_securityUpdates()
+        elif item == "permissions":
+            change_permissions()
+        elif item == "ssh":
+            update_ssh_config()
+        elif item == "ports":
+            close_ports(open_ports_global)
+        elif item == "firewall":
+            activate_firewall()
+        elif item == "setuid":
+            remove_setuid_bit()
+        else:
+            print("\n")
+            print("You did not enter a corect option. Please try again!!!")
 
 def menu():
     print("Python Security Script")
     print(os.getcwd())
     check_security_updates()
     check_permissions()
+    time.sleep(5)
+    suspiciousProcesses=check_suspicious_processes()
+    time.sleep(5)
+    check_setuid_files()
     time.sleep(5)
     check_ssh_configuration()
     time.sleep(5)
@@ -247,7 +380,6 @@ def menu():
     firewall = check_firewall_status()
     time.sleep(5)
     rootkit = check_chkrootkit()
-    time.sleep(5)
 
     print("\n\n\n")
 
@@ -259,8 +391,17 @@ def menu():
     if file_permision != []:
         for line in file_permision:
             print(line)
+    if setuidFiles != []:
+        print("The following files have the setuid bit set:")
+        for line in setuidFiles:
+            print(line)
+    print("If any of the following user should not be in the root or be in the sudo group please remove them.")
     for line in issues:
         print(line)
+    print("\n")
+    if suspiciousProcesses != []:
+        for line in suspiciousProcesses:
+            print(line)
     if ssh_problems != []:
         for line in ssh_problems:
             print(line)
@@ -269,13 +410,10 @@ def menu():
             print(line)
     print(firewall[0])
     print(rootkit[0])
+    check_CVE_2016_5195()
+    solutions(ports,firewall)
 
-    
+
 
 
 menu()
-
-#check_suspicious_processes()
-#check_setuid_files()
-#check_system_logs()
-#check_CVE_2016_5195()
